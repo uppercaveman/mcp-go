@@ -281,11 +281,7 @@ func (s *SSEServer) Start(addr string) error {
 // Shutdown gracefully stops the SSE server, closing all active sessions
 // and shutting down the HTTP server.
 func (s *SSEServer) Shutdown(ctx context.Context) error {
-	s.mu.RLock()
-	srv := s.srv
-	s.mu.RUnlock()
-
-	if srv != nil {
+	if s.srv != nil {
 		s.sessions.Range(func(key, value interface{}) bool {
 			if session, ok := value.(*sseSession); ok {
 				close(session.done)
@@ -293,8 +289,7 @@ func (s *SSEServer) Shutdown(ctx context.Context) error {
 			s.sessions.Delete(key)
 			return true
 		})
-
-		return srv.Shutdown(ctx)
+		return s.srv.Shutdown(ctx)
 	}
 	return nil
 }
