@@ -28,8 +28,7 @@ var initRequest = map[string]any{
 	"id":      1,
 	"method":  "initialize",
 	"params": map[string]any{
-		"protocolVersion": "2025-03-26",
-		"clientInfo": map[string]any{
+		"protocolVersion": mcp.LATEST_PROTOCOL_VERSION, "clientInfo": map[string]any{
 			"name":    "test-client",
 			"version": "1.0.0",
 		},
@@ -146,12 +145,12 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 		if err := json.Unmarshal(bodyBytes, &responseMessage); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
-		if responseMessage.Result["protocolVersion"] != "2025-03-26" {
-			t.Errorf("Expected protocol version 2025-03-26, got %s", responseMessage.Result["protocolVersion"])
+		if responseMessage.Result["protocolVersion"] != mcp.LATEST_PROTOCOL_VERSION {
+			t.Errorf("Expected protocol version %s, got %s", mcp.LATEST_PROTOCOL_VERSION, responseMessage.Result["protocolVersion"])
 		}
 
 		// get session id from header
-		sessionID = resp.Header.Get(headerKeySessionID)
+		sessionID = resp.Header.Get(HeaderKeySessionID)
 		if sessionID == "" {
 			t.Fatalf("Expected session id in header, got %s", sessionID)
 		}
@@ -171,7 +170,7 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 			t.Fatalf("Failed to create request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set(headerKeySessionID, sessionID)
+		req.Header.Set(HeaderKeySessionID, sessionID)
 
 		resp, err := server.Client().Do(req)
 		if err != nil {
@@ -216,7 +215,7 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 
 		req, _ := http.NewRequest(http.MethodPost, server.URL, bytes.NewBuffer(rawNotification))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set(headerKeySessionID, sessionID)
+		req.Header.Set(HeaderKeySessionID, sessionID)
 		resp, err := server.Client().Do(req)
 		if err != nil {
 			t.Fatalf("Failed to send message: %v", err)
@@ -246,7 +245,7 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 			t.Fatalf("Failed to create request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set(headerKeySessionID, "dummy-session-id")
+		req.Header.Set(HeaderKeySessionID, "dummy-session-id")
 
 		resp, err := server.Client().Do(req)
 		if err != nil {
@@ -275,7 +274,7 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 			t.Fatalf("Failed to create request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set(headerKeySessionID, sessionID)
+		req.Header.Set(HeaderKeySessionID, sessionID)
 
 		resp, err := server.Client().Do(req)
 		if err != nil {
@@ -283,8 +282,8 @@ func TestStreamableHTTP_POST_SendAndReceive(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != http.StatusAccepted {
-			t.Errorf("Expected status 202, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
 		}
 		if resp.Header.Get("content-type") != "text/event-stream" {
 			t.Errorf("Expected content-type text/event-stream, got %s", resp.Header.Get("content-type"))
@@ -339,12 +338,12 @@ func TestStreamableHTTP_POST_SendAndReceive_stateless(t *testing.T) {
 		if err := json.Unmarshal(bodyBytes, &responseMessage); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
-		if responseMessage.Result["protocolVersion"] != "2025-03-26" {
-			t.Errorf("Expected protocol version 2025-03-26, got %s", responseMessage.Result["protocolVersion"])
+		if responseMessage.Result["protocolVersion"] != mcp.LATEST_PROTOCOL_VERSION {
+			t.Errorf("Expected protocol version %s, got %s", mcp.LATEST_PROTOCOL_VERSION, responseMessage.Result["protocolVersion"])
 		}
 
 		// no session id from header
-		sessionID := resp.Header.Get(headerKeySessionID)
+		sessionID := resp.Header.Get(HeaderKeySessionID)
 		if sessionID != "" {
 			t.Fatalf("Expected no session id in header, got %s", sessionID)
 		}
@@ -419,8 +418,8 @@ func TestStreamableHTTP_POST_SendAndReceive_stateless(t *testing.T) {
 		}
 	})
 
-	t.Run("Invalid session id", func(t *testing.T) {
-		// send ping message
+	t.Run("Session id ignored in stateless mode", func(t *testing.T) {
+		// send ping message with session ID - should be ignored in stateless mode
 		pingMessage := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      123,
@@ -433,7 +432,7 @@ func TestStreamableHTTP_POST_SendAndReceive_stateless(t *testing.T) {
 			t.Fatalf("Failed to create request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set(headerKeySessionID, "dummy-session-id")
+		req.Header.Set(HeaderKeySessionID, "dummy-session-id")
 
 		resp, err := server.Client().Do(req)
 		if err != nil {
@@ -441,8 +440,63 @@ func TestStreamableHTTP_POST_SendAndReceive_stateless(t *testing.T) {
 		}
 		defer resp.Body.Close()
 
-		if resp.StatusCode != 400 {
-			t.Errorf("Expected status 400, got %d", resp.StatusCode)
+		// In stateless mode, session IDs should be ignored and request should succeed
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		// Verify the response is valid
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Failed to read response: %v", err)
+		}
+		var response map[string]any
+		if err := json.Unmarshal(responseBody, &response); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+		if response["id"].(float64) != 123 {
+			t.Errorf("Expected id 123, got %v", response["id"])
+		}
+	})
+
+	t.Run("tools/list with session id in stateless mode", func(t *testing.T) {
+		// Test the specific scenario from the issue - tools/list with session ID
+		toolsListMessage := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "tools/list",
+			"id":      1,
+		}
+		toolsListBody, _ := json.Marshal(toolsListMessage)
+		req, err := http.NewRequest("POST", server.URL, bytes.NewBuffer(toolsListBody))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(HeaderKeySessionID, "mcp-session-2c44d701-fd50-44ce-92b8-dec46185a741")
+
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Failed to send message: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// Should succeed in stateless mode even with session ID
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			t.Errorf("Expected status 200, got %d. Response: %s", resp.StatusCode, string(bodyBytes))
+		}
+
+		// Verify the response is valid
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Failed to read response: %v", err)
+		}
+		var response map[string]any
+		if err := json.Unmarshal(responseBody, &response); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+		if response["id"].(float64) != 1 {
+			t.Errorf("Expected id 1, got %v", response["id"])
 		}
 	})
 }
@@ -474,8 +528,8 @@ func TestStreamableHTTP_GET(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusAccepted {
-		t.Errorf("Expected status 202, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
 	if resp.Header.Get("content-type") != "text/event-stream" {
@@ -510,8 +564,7 @@ func TestStreamableHTTP_HttpHandler(t *testing.T) {
 			"id":      1,
 			"method":  "initialize",
 			"params": map[string]any{
-				"protocolVersion": "2025-03-26",
-				"clientInfo": map[string]any{
+				"protocolVersion": mcp.LATEST_PROTOCOL_VERSION, "clientInfo": map[string]any{
 					"name":    "test-client",
 					"version": "1.0.0",
 				},
@@ -531,8 +584,8 @@ func TestStreamableHTTP_HttpHandler(t *testing.T) {
 		if err := json.Unmarshal(bodyBytes, &responseMessage); err != nil {
 			t.Fatalf("Failed to unmarshal response: %v", err)
 		}
-		if responseMessage.Result["protocolVersion"] != "2025-03-26" {
-			t.Errorf("Expected protocol version 2025-03-26, got %s", responseMessage.Result["protocolVersion"])
+		if responseMessage.Result["protocolVersion"] != mcp.LATEST_PROTOCOL_VERSION {
+			t.Errorf("Expected protocol version %s, got %s", mcp.LATEST_PROTOCOL_VERSION, responseMessage.Result["protocolVersion"])
 		}
 	})
 }
@@ -668,6 +721,177 @@ func TestStreamableHTTP_SessionWithTools(t *testing.T) {
 			t.Error("Expected final_tool to exist")
 		}
 	})
+}
+
+func TestStreamableHTTP_SessionWithLogging(t *testing.T) {
+	t.Run("SessionWithLogging implementation", func(t *testing.T) {
+		hooks := &Hooks{}
+		var logSession *streamableHttpSession
+		var mu sync.Mutex
+
+		hooks.AddAfterSetLevel(func(ctx context.Context, id any, message *mcp.SetLevelRequest, result *mcp.EmptyResult) {
+			if s, ok := ClientSessionFromContext(ctx).(*streamableHttpSession); ok {
+				mu.Lock()
+				logSession = s
+				mu.Unlock()
+			}
+		})
+
+		mcpServer := NewMCPServer("test", "1.0.0", WithHooks(hooks), WithLogging())
+		testServer := NewTestStreamableHTTPServer(mcpServer)
+		defer testServer.Close()
+
+		// obtain a valid session ID first
+		initResp, err := postJSON(testServer.URL, initRequest)
+		if err != nil {
+			t.Fatalf("Failed to send init request: %v", err)
+		}
+		defer initResp.Body.Close()
+		sessionID := initResp.Header.Get(HeaderKeySessionID)
+		if sessionID == "" {
+			t.Fatal("Expected session id in header")
+		}
+
+		setLevelRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "logging/setLevel",
+			"params": map[string]any{
+				"level": mcp.LoggingLevelCritical,
+			},
+		}
+
+		reqBody, _ := json.Marshal(setLevelRequest)
+		req, err := http.NewRequest(http.MethodPost, testServer.URL, bytes.NewBuffer(reqBody))
+		if err != nil {
+			t.Fatalf("Failed to create request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(HeaderKeySessionID, sessionID)
+
+		resp, err := testServer.Client().Do(req)
+		if err != nil {
+			t.Fatalf("Failed to send message: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		mu.Lock()
+		if logSession == nil {
+			mu.Unlock()
+			t.Fatal("Session was not captured")
+		}
+		if logSession.GetLogLevel() != mcp.LoggingLevelCritical {
+			t.Errorf("Expected critical level, got %v", logSession.GetLogLevel())
+		}
+		mu.Unlock()
+	})
+}
+
+func TestStreamableHTTPServer_WithOptions(t *testing.T) {
+	t.Run("WithStreamableHTTPServer sets httpServer field", func(t *testing.T) {
+		mcpServer := NewMCPServer("test", "1.0.0")
+		customServer := &http.Server{Addr: ":9999"}
+		httpServer := NewStreamableHTTPServer(mcpServer, WithStreamableHTTPServer(customServer))
+
+		if httpServer.httpServer != customServer {
+			t.Errorf("Expected httpServer to be set to custom server instance, got %v", httpServer.httpServer)
+		}
+	})
+
+	t.Run("Start with conflicting address returns error", func(t *testing.T) {
+		mcpServer := NewMCPServer("test", "1.0.0")
+		customServer := &http.Server{Addr: ":9999"}
+		httpServer := NewStreamableHTTPServer(mcpServer, WithStreamableHTTPServer(customServer))
+
+		err := httpServer.Start(":8888")
+		if err == nil {
+			t.Error("Expected error for conflicting address, got nil")
+		} else if !strings.Contains(err.Error(), "conflicting listen address") {
+			t.Errorf("Expected error message to contain 'conflicting listen address', got '%s'", err.Error())
+		}
+	})
+
+	t.Run("Options consistency test", func(t *testing.T) {
+		mcpServer := NewMCPServer("test", "1.0.0")
+		endpointPath := "/test-mcp"
+		customServer := &http.Server{}
+
+		// Options to test
+		options := []StreamableHTTPOption{
+			WithEndpointPath(endpointPath),
+			WithStreamableHTTPServer(customServer),
+		}
+
+		// Apply options multiple times and verify consistency
+		for i := 0; i < 10; i++ {
+			server := NewStreamableHTTPServer(mcpServer, options...)
+
+			if server.endpointPath != endpointPath {
+				t.Errorf("Expected endpointPath %s, got %s", endpointPath, server.endpointPath)
+			}
+
+			if server.httpServer != customServer {
+				t.Errorf("Expected httpServer to match, got %v", server.httpServer)
+			}
+		}
+	})
+}
+
+func TestStreamableHTTP_HeaderPassthrough(t *testing.T) {
+	mcpServer := NewMCPServer("test-mcp-server", "1.0")
+
+	var receivedHeaders struct {
+		contentType  string
+		customHeader string
+	}
+	mcpServer.AddTool(
+		mcp.NewTool("check-headers"),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			receivedHeaders.contentType = request.Header.Get("Content-Type")
+			receivedHeaders.customHeader = request.Header.Get("X-Custom-Header")
+			return mcp.NewToolResultText("ok"), nil
+		},
+	)
+
+	server := NewTestStreamableHTTPServer(mcpServer)
+	defer server.Close()
+
+	// Initialize to get session
+	resp, _ := postJSON(server.URL, initRequest)
+	sessionID := resp.Header.Get(HeaderKeySessionID)
+	resp.Body.Close()
+
+	// Test header passthrough
+	toolRequest := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "check-headers",
+		},
+	}
+	toolBody, _ := json.Marshal(toolRequest)
+	req, _ := http.NewRequest("POST", server.URL, bytes.NewReader(toolBody))
+
+	const expectedContentType = "application/json"
+	const expectedCustomHeader = "test-value"
+	req.Header.Set("Content-Type", expectedContentType)
+	req.Header.Set("X-Custom-Header", expectedCustomHeader)
+	req.Header.Set(HeaderKeySessionID, sessionID)
+
+	resp, _ = server.Client().Do(req)
+	resp.Body.Close()
+
+	if receivedHeaders.contentType != expectedContentType {
+		t.Errorf("Expected Content-Type header '%s', got '%s'", expectedContentType, receivedHeaders.contentType)
+	}
+	if receivedHeaders.customHeader != expectedCustomHeader {
+		t.Errorf("Expected X-Custom-Header '%s', got '%s'", expectedCustomHeader, receivedHeaders.customHeader)
+	}
 }
 
 func postJSON(url string, bodyObject any) (*http.Response, error) {

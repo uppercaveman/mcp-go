@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestMCPServer_Capabilities(t *testing.T) {
 
 				assert.Equal(
 					t,
-					mcp.LATEST_PROTOCOL_VERSION,
+					"2025-03-26", // Backward compatibility: no protocol version provided,
 					initResult.ProtocolVersion,
 				)
 				assert.Equal(t, "test-server", initResult.ServerInfo.Name)
@@ -69,7 +70,7 @@ func TestMCPServer_Capabilities(t *testing.T) {
 
 				assert.Equal(
 					t,
-					mcp.LATEST_PROTOCOL_VERSION,
+					"2025-03-26", // Backward compatibility: no protocol version provided,
 					initResult.ProtocolVersion,
 				)
 				assert.Equal(t, "test-server", initResult.ServerInfo.Name)
@@ -106,7 +107,7 @@ func TestMCPServer_Capabilities(t *testing.T) {
 
 				assert.Equal(
 					t,
-					mcp.LATEST_PROTOCOL_VERSION,
+					"2025-03-26", // Backward compatibility: no protocol version provided,
 					initResult.ProtocolVersion,
 				)
 				assert.Equal(t, "test-server", initResult.ServerInfo.Name)
@@ -406,7 +407,7 @@ func TestMCPServer_HandleValidMessages(t *testing.T) {
 
 				assert.Equal(
 					t,
-					mcp.LATEST_PROTOCOL_VERSION,
+					"2025-03-26", // Backward compatibility: no protocol version provided,
 					initResult.ProtocolVersion,
 				)
 				assert.Equal(t, "test-server", initResult.ServerInfo.Name)
@@ -1456,6 +1457,54 @@ func TestMCPServer_ResourceTemplates(t *testing.T) {
 		assert.Equal(t, "text/plain", resultContent.MIMEType)
 		assert.Equal(t, "test content: something", resultContent.Text)
 	})
+
+	server.AddResourceTemplates(
+		ServerResourceTemplate{
+			Template: mcp.NewResourceTemplate(
+				"test://test-another-resource-1",
+				"Another Resource 1",
+			),
+			Handler: func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				return []mcp.ResourceContents{}, nil
+			},
+		},
+		ServerResourceTemplate{
+			Template: mcp.NewResourceTemplate(
+				"test://test-another-resource-2",
+				"Another Resource 2",
+			),
+			Handler: func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				return []mcp.ResourceContents{}, nil
+			},
+		},
+	)
+
+	t.Run("Check bulk add resource templates", func(t *testing.T) {
+		assert.Equal(t, 3, len(server.resourceTemplates))
+	})
+
+	t.Run("Get resource template again", func(t *testing.T) {
+		response := server.HandleMessage(
+			context.Background(),
+			[]byte(listMessage),
+		)
+		assert.NotNil(t, response)
+
+		resp, ok := response.(mcp.JSONRPCResponse)
+		assert.True(t, ok)
+		listResult, ok := resp.Result.(mcp.ListResourceTemplatesResult)
+		assert.True(t, ok)
+		assert.Len(t, listResult.ResourceTemplates, 3)
+
+		// resource templates are stored in a map, so the order is not guaranteed
+		for _, rt := range listResult.ResourceTemplates {
+			assert.True(t, slices.Contains([]string{
+				"My Resource",
+				"Another Resource 1",
+				"Another Resource 2",
+			}, rt.Name))
+		}
+	})
 }
 
 func createTestServer() *MCPServer {
@@ -1943,6 +1992,82 @@ func TestMCPServer_ToolCapabilitiesBehavior(t *testing.T) {
 			server := NewMCPServer("test-server", "1.0.0", tt.serverOptions...)
 			server.AddTool(mcp.NewTool("test-tool"), nil)
 			tt.validateServer(t, server)
+		})
+	}
+}
+
+func TestMCPServer_ProtocolNegotiation(t *testing.T) {
+	tests := []struct {
+		name            string
+		clientVersion   string
+		expectedVersion string
+	}{
+		{
+			name:            "Server supports client version - should respond with same version",
+			clientVersion:   "2024-11-05",
+			expectedVersion: "2024-11-05", // Server must respond with client's version if supported
+		},
+		{
+			name:            "Client requests current latest - should respond with same version",
+			clientVersion:   mcp.LATEST_PROTOCOL_VERSION, // "2025-03-26"
+			expectedVersion: mcp.LATEST_PROTOCOL_VERSION,
+		},
+		{
+			name:            "Client requests unsupported future version - should respond with server's latest",
+			clientVersion:   "2026-01-01",                // Future unsupported version
+			expectedVersion: mcp.LATEST_PROTOCOL_VERSION, // Server responds with its latest supported
+		},
+		{
+			name:            "Client requests unsupported old version - should respond with server's latest",
+			clientVersion:   "2023-01-01",                // Very old unsupported version
+			expectedVersion: mcp.LATEST_PROTOCOL_VERSION, // Server responds with its latest supported
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewMCPServer("test-server", "1.0.0")
+
+			params := struct {
+				ProtocolVersion string                 `json:"protocolVersion"`
+				ClientInfo      mcp.Implementation     `json:"clientInfo"`
+				Capabilities    mcp.ClientCapabilities `json:"capabilities"`
+			}{
+				ProtocolVersion: tt.clientVersion,
+				ClientInfo: mcp.Implementation{
+					Name:    "test-client",
+					Version: "1.0.0",
+				},
+			}
+
+			// Create initialize request with specific protocol version
+			initRequest := mcp.JSONRPCRequest{
+				JSONRPC: "2.0",
+				ID:      mcp.NewRequestId(int64(1)),
+				Request: mcp.Request{
+					Method: "initialize",
+				},
+				Params: params,
+			}
+
+			messageBytes, err := json.Marshal(initRequest)
+			assert.NoError(t, err)
+
+			response := server.HandleMessage(context.Background(), messageBytes)
+			assert.NotNil(t, response)
+
+			resp, ok := response.(mcp.JSONRPCResponse)
+			assert.True(t, ok)
+
+			initResult, ok := resp.Result.(mcp.InitializeResult)
+			assert.True(t, ok)
+
+			assert.Equal(
+				t,
+				tt.expectedVersion,
+				initResult.ProtocolVersion,
+				"Protocol version should follow MCP spec negotiation rules",
+			)
 		})
 	}
 }

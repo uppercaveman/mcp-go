@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 
@@ -49,6 +50,24 @@ type ToolFilterFunc func(ctx context.Context, tools []mcp.Tool) []mcp.Tool
 type ServerTool struct {
 	Tool    mcp.Tool
 	Handler ToolHandlerFunc
+}
+
+// ServerPrompt combines a Prompt with its handler function.
+type ServerPrompt struct {
+	Prompt  mcp.Prompt
+	Handler PromptHandlerFunc
+}
+
+// ServerResource combines a Resource with its handler function.
+type ServerResource struct {
+	Resource mcp.Resource
+	Handler  ResourceHandlerFunc
+}
+
+// ServerResourceTemplate combines a ResourceTemplate with its handler function.
+type ServerResourceTemplate struct {
+	Template mcp.ResourceTemplate
+	Handler  ResourceTemplateHandlerFunc
 }
 
 // serverKey is the context key for storing the server instance
@@ -304,28 +323,21 @@ func NewMCPServer(
 	return s
 }
 
-// AddResource registers a new resource and its handler
-func (s *MCPServer) AddResource(
-	resource mcp.Resource,
-	handler ResourceHandlerFunc,
-) {
-	s.capabilitiesMu.RLock()
-	if s.capabilities.resources == nil {
-		s.capabilitiesMu.RUnlock()
+// GenerateInProcessSessionID generates a unique session ID for inprocess clients
+func (s *MCPServer) GenerateInProcessSessionID() string {
+	return GenerateInProcessSessionID()
+}
 
-		s.capabilitiesMu.Lock()
-		if s.capabilities.resources == nil {
-			s.capabilities.resources = &resourceCapabilities{}
-		}
-		s.capabilitiesMu.Unlock()
-	} else {
-		s.capabilitiesMu.RUnlock()
-	}
+// AddResources registers multiple resources at once
+func (s *MCPServer) AddResources(resources ...ServerResource) {
+	s.implicitlyRegisterResourceCapabilities()
 
 	s.resourcesMu.Lock()
-	s.resources[resource.URI] = resourceEntry{
-		resource: resource,
-		handler:  handler,
+	for _, entry := range resources {
+		s.resources[entry.Resource.URI] = resourceEntry{
+			resource: entry.Resource,
+			handler:  entry.Handler,
+		}
 	}
 	s.resourcesMu.Unlock()
 
@@ -334,6 +346,22 @@ func (s *MCPServer) AddResource(
 		// Send notification to all initialized sessions
 		s.SendNotificationToAllClients(mcp.MethodNotificationResourcesListChanged, nil)
 	}
+}
+
+// SetResources replaces all existing resources with the provided list
+func (s *MCPServer) SetResources(resources ...ServerResource) {
+	s.resourcesMu.Lock()
+	s.resources = make(map[string]resourceEntry, len(resources))
+	s.resourcesMu.Unlock()
+	s.AddResources(resources...)
+}
+
+// AddResource registers a new resource and its handler
+func (s *MCPServer) AddResource(
+	resource mcp.Resource,
+	handler ResourceHandlerFunc,
+) {
+	s.AddResources(ServerResource{Resource: resource, Handler: handler})
 }
 
 // RemoveResource removes a resource from the server
@@ -351,28 +379,16 @@ func (s *MCPServer) RemoveResource(uri string) {
 	}
 }
 
-// AddResourceTemplate registers a new resource template and its handler
-func (s *MCPServer) AddResourceTemplate(
-	template mcp.ResourceTemplate,
-	handler ResourceTemplateHandlerFunc,
-) {
-	s.capabilitiesMu.RLock()
-	if s.capabilities.resources == nil {
-		s.capabilitiesMu.RUnlock()
-
-		s.capabilitiesMu.Lock()
-		if s.capabilities.resources == nil {
-			s.capabilities.resources = &resourceCapabilities{}
-		}
-		s.capabilitiesMu.Unlock()
-	} else {
-		s.capabilitiesMu.RUnlock()
-	}
+// AddResourceTemplates registers multiple resource templates at once
+func (s *MCPServer) AddResourceTemplates(resourceTemplates ...ServerResourceTemplate) {
+	s.implicitlyRegisterResourceCapabilities()
 
 	s.resourcesMu.Lock()
-	s.resourceTemplates[template.URITemplate.Raw()] = resourceTemplateEntry{
-		template: template,
-		handler:  handler,
+	for _, entry := range resourceTemplates {
+		s.resourceTemplates[entry.Template.URITemplate.Raw()] = resourceTemplateEntry{
+			template: entry.Template,
+			handler:  entry.Handler,
+		}
 	}
 	s.resourcesMu.Unlock()
 
@@ -383,24 +399,31 @@ func (s *MCPServer) AddResourceTemplate(
 	}
 }
 
-// AddPrompt registers a new prompt handler with the given name
-func (s *MCPServer) AddPrompt(prompt mcp.Prompt, handler PromptHandlerFunc) {
-	s.capabilitiesMu.RLock()
-	if s.capabilities.prompts == nil {
-		s.capabilitiesMu.RUnlock()
+// SetResourceTemplates replaces all existing resource templates with the provided list
+func (s *MCPServer) SetResourceTemplates(templates ...ServerResourceTemplate) {
+	s.resourcesMu.Lock()
+	s.resourceTemplates = make(map[string]resourceTemplateEntry, len(templates))
+	s.resourcesMu.Unlock()
+	s.AddResourceTemplates(templates...)
+}
 
-		s.capabilitiesMu.Lock()
-		if s.capabilities.prompts == nil {
-			s.capabilities.prompts = &promptCapabilities{}
-		}
-		s.capabilitiesMu.Unlock()
-	} else {
-		s.capabilitiesMu.RUnlock()
-	}
+// AddResourceTemplate registers a new resource template and its handler
+func (s *MCPServer) AddResourceTemplate(
+	template mcp.ResourceTemplate,
+	handler ResourceTemplateHandlerFunc,
+) {
+	s.AddResourceTemplates(ServerResourceTemplate{Template: template, Handler: handler})
+}
+
+// AddPrompts registers multiple prompts at once
+func (s *MCPServer) AddPrompts(prompts ...ServerPrompt) {
+	s.implicitlyRegisterPromptCapabilities()
 
 	s.promptsMu.Lock()
-	s.prompts[prompt.Name] = prompt
-	s.promptHandlers[prompt.Name] = handler
+	for _, entry := range prompts {
+		s.prompts[entry.Prompt.Name] = entry.Prompt
+		s.promptHandlers[entry.Prompt.Name] = entry.Handler
+	}
 	s.promptsMu.Unlock()
 
 	// When the list of available prompts changes, servers that declared the listChanged capability SHOULD send a notification.
@@ -408,6 +431,20 @@ func (s *MCPServer) AddPrompt(prompt mcp.Prompt, handler PromptHandlerFunc) {
 		// Send notification to all initialized sessions
 		s.SendNotificationToAllClients(mcp.MethodNotificationPromptsListChanged, nil)
 	}
+}
+
+// AddPrompt registers a new prompt handler with the given name
+func (s *MCPServer) AddPrompt(prompt mcp.Prompt, handler PromptHandlerFunc) {
+	s.AddPrompts(ServerPrompt{Prompt: prompt, Handler: handler})
+}
+
+// SetPrompts replaces all existing prompts with the provided list
+func (s *MCPServer) SetPrompts(prompts ...ServerPrompt) {
+	s.promptsMu.Lock()
+	s.prompts = make(map[string]mcp.Prompt, len(prompts))
+	s.promptHandlers = make(map[string]PromptHandlerFunc, len(prompts))
+	s.promptsMu.Unlock()
+	s.AddPrompts(prompts...)
 }
 
 // DeletePrompts removes prompts from the server
@@ -439,20 +476,39 @@ func (s *MCPServer) AddTool(tool mcp.Tool, handler ToolHandlerFunc) {
 // listChanged: true, but don't change the value if we've already explicitly
 // registered tools.listChanged false.
 func (s *MCPServer) implicitlyRegisterToolCapabilities() {
-	s.capabilitiesMu.RLock()
-	if s.capabilities.tools == nil {
-		s.capabilitiesMu.RUnlock()
+	s.implicitlyRegisterCapabilities(
+		func() bool { return s.capabilities.tools != nil },
+		func() { s.capabilities.tools = &toolCapabilities{listChanged: true} },
+	)
+}
 
-		s.capabilitiesMu.Lock()
-		if s.capabilities.tools == nil {
-			s.capabilities.tools = &toolCapabilities{
-				listChanged: true,
-			}
-		}
-		s.capabilitiesMu.Unlock()
-	} else {
+func (s *MCPServer) implicitlyRegisterResourceCapabilities() {
+	s.implicitlyRegisterCapabilities(
+		func() bool { return s.capabilities.resources != nil },
+		func() { s.capabilities.resources = &resourceCapabilities{} },
+	)
+}
+
+func (s *MCPServer) implicitlyRegisterPromptCapabilities() {
+	s.implicitlyRegisterCapabilities(
+		func() bool { return s.capabilities.prompts != nil },
+		func() { s.capabilities.prompts = &promptCapabilities{} },
+	)
+}
+
+func (s *MCPServer) implicitlyRegisterCapabilities(check func() bool, register func()) {
+	s.capabilitiesMu.RLock()
+	if check() {
 		s.capabilitiesMu.RUnlock()
+		return
 	}
+	s.capabilitiesMu.RUnlock()
+
+	s.capabilitiesMu.Lock()
+	if !check() {
+		register()
+	}
+	s.capabilitiesMu.Unlock()
 }
 
 // AddTools registers multiple tools at once
@@ -550,7 +606,7 @@ func (s *MCPServer) handleInitialize(
 	}
 
 	result := mcp.InitializeResult{
-		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		ProtocolVersion: s.protocolVersion(request.Params.ProtocolVersion),
 		ServerInfo: mcp.Implementation{
 			Name:    s.name,
 			Version: s.version,
@@ -565,9 +621,27 @@ func (s *MCPServer) handleInitialize(
 		// Store client info if the session supports it
 		if sessionWithClientInfo, ok := session.(SessionWithClientInfo); ok {
 			sessionWithClientInfo.SetClientInfo(request.Params.ClientInfo)
+			sessionWithClientInfo.SetClientCapabilities(request.Params.Capabilities)
 		}
 	}
+
 	return &result, nil
+}
+
+func (s *MCPServer) protocolVersion(clientVersion string) string {
+	// For backwards compatibility, if the server does not receive an MCP-Protocol-Version header,
+	// and has no other way to identify the version - for example, by relying on the protocol version negotiated
+	// during initialization - the server SHOULD assume protocol version 2025-03-26
+	// https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#protocol-version-header
+	if len(clientVersion) == 0 {
+		clientVersion = "2025-03-26"
+	}
+
+	if slices.Contains(mcp.ValidProtocolVersions, clientVersion) {
+		return clientVersion
+	}
+
+	return mcp.LATEST_PROTOCOL_VERSION
 }
 
 func (s *MCPServer) handlePing(
@@ -997,12 +1071,12 @@ func (s *MCPServer) handleToolCall(
 
 	s.middlewareMu.RLock()
 	mw := s.toolHandlerMiddlewares
-	s.middlewareMu.RUnlock()
 
 	// Apply middlewares in reverse order
 	for i := len(mw) - 1; i >= 0; i-- {
 		finalHandler = mw[i](finalHandler)
 	}
+	s.middlewareMu.RUnlock()
 
 	result, err := finalHandler(ctx, request)
 	if err != nil {
